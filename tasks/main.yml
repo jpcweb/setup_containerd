@@ -1,0 +1,42 @@
+---
+- name: Install dependencies
+  apt:
+    name:
+    - apt-transport-https
+    - ca-certificates
+    - curl
+    - software-properties-common
+    state: latest
+    update_cache: true
+
+- name: Add Docker official signing GPG key
+  apt_key:
+    url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
+    state: present
+
+- name: Add Docker repository
+  apt_repository:
+    repo: "deb [arch={{ ansible_architecture }}] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+    state: present
+
+- name: Install container.d
+  apt:
+    name: containerd.io
+    state: latest
+
+- name: Downloading and extracting {{ crictl_app }} {{ crictl_version }} for Debian based distro
+  unarchive:
+    src: "{{ crictl_repo_url }}"
+    dest: "{{ crictl_bin_path }}"
+    owner: "{{ crictl_file_owner }}"
+    group: "{{ crictl_file_group }}"
+    extra_opts:
+      - crictl
+    remote_src: yes
+
+- name: Add opensuse offical signing GPG keys
+  apt_key:
+    url: "https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:{{ crio_version }}/x{{ ansible_distribution }}_{{ ansible_distribution_version }}/Release.key"
+  when: ansible_distribution == "Ubuntu" 
+
+- include_tasks: configure.yml 
