@@ -34,9 +34,4 @@
       - crictl
     remote_src: yes
 
-- name: Add opensuse offical signing GPG keys
-  apt_key:
-    url: "https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:{{ crio_version }}/x{{ ansible_distribution }}_{{ ansible_distribution_version }}/Release.key"
-  when: ansible_distribution == "Ubuntu" 
-
 - include_tasks: configure.yml 
