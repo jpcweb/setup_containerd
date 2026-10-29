@@ -1,0 +1,78 @@
+---
+# Contrôles à chaque run, nœud upgradé ou non. En check mode, les contrôles
+# de version sont sautés : le paquet n'a pas réellement bougé.
+
+- name: Version du containerd en cours d'exécution
+  ansible.builtin.command: ctr version
+  register: containerd_ctr_version
+  changed_when: false
+  check_mode: false
+
+- name: REFUS — le démon ne tourne pas la version cible (redémarrage manquant ?)
+  ansible.builtin.assert:
+    that: containerd_running_version == containerd_target_upstream
+    fail_msg: >-
+      containerd tourne en {{ containerd_running_version }}, cible
+      {{ containerd_target_upstream }} (paquet {{ containerd_pkg_version }}).
+    quiet: true
+  vars:
+    containerd_running_version: >-
+      {{ containerd_ctr_version.stdout
+         | regex_search('Server:\s*Version:\s*v?(\S+)', '\1') | first | default('?') }}
+  when: not ansible_check_mode
+
+- name: Crictl présent ?
+  ansible.builtin.command: which crictl
+  register: containerd_crictl_which
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Vue CRI de containerd (crictl info)
+  ansible.builtin.command: crictl info
+  register: containerd_crictl_info
+  until: containerd_crictl_info.rc == 0
+  retries: 10
+  delay: 3
+  changed_when: false
+  check_mode: false
+  when: containerd_crictl_which.rc == 0
+
+- name: Contrôle — runtimes déclarés et driver cgroup
+  ansible.builtin.assert:
+    that:
+      - "'runc' in containerd_cri_runtimes"
+      - not (containerd_runsc | bool) or 'runsc' in containerd_cri_runtimes
+      - not (containerd_require_systemd_cgroup | bool)
+        or ((containerd_cri_runtimes.runc | default({})).options | default({})).SystemdCgroup | default(false) | bool
+    fail_msg: >-
+      Vue CRI incohérente sur {{ containerd_node_name }} : runtimes
+      {{ containerd_cri_runtimes | list }}, runc SystemdCgroup =
+      {{ ((containerd_cri_runtimes.runc | default({})).options | default({})).SystemdCgroup | default('absent') }}
+      (attendu : runc{{ ' + runsc' if containerd_runsc | bool else '' }}, SystemdCgroup true).
+    quiet: true
+  vars:
+    containerd_cri_runtimes: "{{ ((containerd_crictl_info.stdout | from_json).config.containerd | default({})).runtimes | default({}) }}"
+  when: containerd_crictl_which.rc == 0
+
+- name: Contrôle CRI sauté — crictl absent
+  ansible.builtin.debug:
+    msg: "crictl absent : contrôle des runtimes sauté (il sera disponible après setup_kubernetes)."
+  when: containerd_crictl_which.rc != 0
+
+- name: Attente — nœud Ready avec le runtime cible
+  ansible.builtin.command: "{{ containerd_kubectl }} get node {{ containerd_node_name }} -o json"
+  delegate_to: "{{ containerd_first_cp }}"
+  register: containerd_node_status
+  until: >-
+    containerd_node_status.rc == 0 and
+    (containerd_node_status.stdout | from_json).status.nodeInfo.containerRuntimeVersion
+      == 'containerd://' ~ containerd_target_upstream and
+    ((containerd_node_status.stdout | from_json).status.conditions
+      | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first) == 'True'
+  retries: "{{ containerd_ready_retries }}"
+  delay: "{{ containerd_ready_delay }}"
+  changed_when: false
+  when:
+    - containerd_in_cluster | bool
+    - not ansible_check_mode

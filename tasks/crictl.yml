@@ -1,0 +1,31 @@
+---
+- name: Paquet cri-tools disponible ? (dépôt pkgs.k8s.io)
+  ansible.builtin.command: apt-cache policy cri-tools
+  register: containerd_critools_policy
+  changed_when: false
+  check_mode: false
+
+- name: Disponibilité de cri-tools retenue
+  ansible.builtin.set_fact:
+    containerd_critools_available: >-
+      {{ containerd_critools_policy.stdout is search('Candidate:\s*(?!\(none\))\S+') }}
+
+# latest : le dépôt pkgs.k8s.io est par mineure, « latest » = crictl aligné
+# sur la mineure Kubernetes du nœud.
+- name: Crictl (paquet cri-tools)
+  ansible.builtin.apt:
+    name: cri-tools
+    state: latest
+  when: containerd_critools_available | bool
+
+- name: Ancien crictl posé à la main (masquerait le paquet dans le PATH)
+  ansible.builtin.file:
+    path: "{{ containerd_crictl_legacy_bin }}"
+    state: absent
+  when: containerd_critools_available | bool
+
+- name: Configuration de crictl
+  ansible.builtin.template:
+    src: crictl.yaml.j2
+    dest: /etc/crictl.yaml
+    mode: "0644"

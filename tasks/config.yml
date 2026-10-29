@@ -1,0 +1,45 @@
+---
+# Le config.toml en place est la vérité du nœud : on ne le réécrit que s'il
+# est absent, s'il est la config par défaut du paquet (plugin CRI désactivé,
+# inutilisable par kubelet), ou sur demande explicite.
+# Un redémarrage de containerd ne tue pas les conteneurs (les shims
+# survivent) : pas de drain pour un simple changement de config.
+
+- name: Config.toml actuel
+  ansible.builtin.slurp:
+    src: /etc/containerd/config.toml
+  register: containerd_config_current
+  failed_when: false
+
+- name: Faut-il écrire config.toml depuis le template ?
+  ansible.builtin.set_fact:
+    containerd_write_config: >-
+      {{ containerd_manage_config | bool
+         or containerd_config_current.content is not defined
+         or (containerd_config_current.content | b64decode)
+            is search('(?m)^\s*disabled_plugins\s*=\s*\[[^\]]*"cri"') }}
+
+- name: Répertoire de configuration
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+  when: containerd_write_config | bool
+
+# validate : containerd relit le fichier candidat avant qu'il remplace l'actuel.
+- name: Config.toml depuis le template
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/containerd/config.toml
+    mode: "0644"
+    backup: true
+    validate: containerd --config %s config dump
+  register: containerd_config_written
+  when: containerd_write_config | bool
+
+- name: Containerd redémarré (nouvelle config)
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+    enabled: true
+  when: containerd_config_written is changed

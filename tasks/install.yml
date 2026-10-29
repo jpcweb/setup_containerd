@@ -1,0 +1,13 @@
+---
+# Nœud neuf : aucun pod à protéger, pas de drain.
+
+- name: Containerd.io {{ containerd_pkg_version }}
+  ansible.builtin.apt:
+    name: "containerd.io={{ containerd_pkg_version }}"
+    state: present
+
+- name: Containerd activé et démarré
+  ansible.builtin.systemd:
+    name: containerd
+    state: started
+    enabled: true

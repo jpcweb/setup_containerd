@@ -1,10 +1,80 @@
 ---
-# defaults file for setup_containerd
-crictl_app: crictl
-crictl_version: 1.24.0
-crictl_os: linux
-crictl_arch: amd64
-crictl_repo_url: https://github.com/kubernetes-sigs/cri-tools/releases/download/v{{ crictl_version }}/{{ crictl_app }}-v{{ crictl_version }}-{{ crictl_os }}-{{ crictl_arch }}.tar.gz
-crictl_bin_path: /usr/local/bin
-crictl_file_owner: root
-crictl_file_group: root
+# =============================================================================
+# setup_containerd — defaults
+#
+# Installe, met à jour et contrôle containerd (paquet containerd.io du dépôt
+# apt Docker) sur des nœuds Kubernetes Debian/Ubuntu.
+# Un seul chemin pour trois situations :
+#   - nœud neuf      : dépôt, paquet, config.toml depuis le template
+#   - nœud à jour    : rien ne bouge, gel du paquet et contrôles seuls
+#   - nœud en retard : upgrade roulant (drain, paquet, redémarrages, uncordon)
+# =============================================================================
+
+# --- Version cible -----------------------------------------------------------
+# Version du paquet containerd.io SANS le suffixe de distribution, qui est
+# résolu depuis le dépôt (~debian.13~trixie, ~ubuntu.24.04~noble...).
+#   "2.4.2-3" : révision de paquet exacte (recommandé, reproductible)
+#   "2.4.2"   : révision la plus récente publiée pour 2.4.2
+# OBLIGATOIRE : le rôle refuse de deviner. Viser une nouvelle version =
+# changer cette variable et relancer le playbook.
+containerd_version: ""
+
+# Downgrade interdit par défaut (format des données, config migrée en v4...).
+containerd_allow_downgrade: false
+
+# Gel apt du paquet : sans lui, un dist-upgrade (rôle upgrade_packages) fait
+# monter containerd sous les pods, sans drain. Vécu sur master.k8s et jeworker.
+containerd_hold: true
+
+# --- Dépôt -------------------------------------------------------------------
+# Le fichier de source est possédé intégralement par le rôle. Toute autre
+# source active vers download.docker.com est supprimée : deux Signed-By
+# différents pour le même dépôt cassent apt update.
+containerd_repo_url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}"
+containerd_repo_file: /etc/apt/sources.list.d/docker.list
+containerd_repo_key_path: /etc/apt/keyrings/docker.asc
+
+# Fichiers apt orphelins à supprimer (pins, sources laissés par un autre
+# outil de gestion de config).
+containerd_stale_apt_files: []
+
+# --- Configuration -----------------------------------------------------------
+# Le config.toml existant n'est JAMAIS écrasé, sauf :
+#   - fichier absent, ou config par défaut du paquet (plugin CRI désactivé)
+#   - containerd_manage_config: true (réécriture depuis le template)
+# containerd 2.x convertit en mémoire les anciennes configs (version 2) à
+# chaque démarrage : une config 1.x continue de fonctionner après upgrade.
+containerd_manage_config: false
+
+# Déclare le runtime gVisor (runsc) dans le template. Le binaire runsc et son
+# shim restent à installer à part (dépôt gVisor).
+containerd_runsc: false
+
+# Échec si runc n'utilise pas le driver cgroup systemd (kubelet l'utilise :
+# deux drivers différents = dérive mémoire et OOM aléatoires).
+containerd_require_systemd_cgroup: true
+
+# --- Kubernetes --------------------------------------------------------------
+# Groupe d'inventaire du control plane : son PREMIER hôte exécute kubectl
+# (drain, uncordon, attente Ready) avec /etc/kubernetes/admin.conf.
+# Groupe vide ou absent = nœud hors cluster : ni drain ni contrôle Ready.
+containerd_control_plane_group: "k8s_control_plane"
+
+# Nom du nœud tel que connu par Kubernetes
+containerd_node_name: "{{ ansible_facts['nodename'] | lower }}"
+
+containerd_drain_workers: true
+containerd_drain_control_plane: false
+containerd_drain_timeout: "300s"
+containerd_drain_extra_opts: "--ignore-daemonsets --delete-emptydir-data"
+
+# Attente du nœud Ready avec la nouvelle version de runtime
+containerd_ready_retries: 30
+containerd_ready_delay: 10
+
+# --- crictl ------------------------------------------------------------------
+# crictl vient du paquet cri-tools du dépôt pkgs.k8s.io (une version par
+# mineure Kubernetes, alignée par construction). Installé seulement si le
+# dépôt est déjà configuré (rôle setup_kubernetes) ; l'ancien binaire posé
+# à la main dans /usr/local/bin est alors supprimé (il masquerait le paquet).
+containerd_crictl_legacy_bin: /usr/local/bin/crictl

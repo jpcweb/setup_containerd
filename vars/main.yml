@@ -1,2 +1,21 @@
 ---
-# vars file for setup_containerd
+# Valeurs dérivées — ne pas surcharger.
+
+# Groupe vide : repli sur le nœud lui-même, où kubectl échoue faute
+# d'admin.conf → nœud considéré hors cluster (ni drain ni contrôle Ready).
+containerd_first_cp: "{{ (groups[containerd_control_plane_group] | default([]) + [inventory_hostname])[0] }}"
+containerd_kubectl: "kubectl --kubeconfig /etc/kubernetes/admin.conf"
+
+# Versions du dépôt qui satisfont containerd_version :
+#   "2.4.2-3" → 2.4.2-3, 2.4.2-3~debian.13~trixie...
+#   "2.4.2"   → 2.4.2-<toute révision>[~suffixe]
+containerd_version_regex: >-
+  {{ '^' ~ (containerd_version | regex_escape)
+     ~ ('(~.*)?$' if '-' in containerd_version else '-[^~]+(~.*)?$') }}
+
+# Version amont (2.4.2) et version paquet sans suffixe de distribution (2.4.2-3).
+# La comparaison installé ↔ cible se fait sur cette dernière : passer d'un
+# build jammy à un build noble de la même version ne justifie pas un drain.
+containerd_target_base: "{{ containerd_pkg_version | regex_replace('~.*$', '') }}"
+containerd_target_upstream: "{{ containerd_pkg_version | regex_replace('-[^-]*$', '') }}"
+containerd_installed_base: "{{ containerd_installed_version | regex_replace('~.*$', '') }}"

@@ -1,0 +1,85 @@
+---
+# Upgrade d'un nœud vers containerd_pkg_version. Le preflight a déjà refusé
+# les downgrades non autorisés et vérifié que la cible existe dans le dépôt :
+# rien n'est touché avant ce point.
+# Le config.toml existant est conservé tel quel (force-confold) : containerd
+# 2.x convertit en mémoire les configs version 2 à chaque démarrage.
+
+- name: Upgrade prévu
+  ansible.builtin.debug:
+    msg: "containerd.io {{ containerd_installed_version }} → {{ containerd_pkg_version }} sur {{ containerd_node_name }}"
+
+- name: Config.toml présent ?
+  ansible.builtin.stat:
+    path: /etc/containerd/config.toml
+  register: containerd_config_before
+
+- name: Répertoire de sauvegarde
+  ansible.builtin.file:
+    path: /var/backups/containerd
+    state: directory
+    mode: "0700"
+  when: containerd_config_before.stat.exists
+
+- name: Sauvegarde de config.toml (retour arrière possible)
+  ansible.builtin.copy:
+    src: /etc/containerd/config.toml
+    dest: "/var/backups/containerd/config.toml.{{ containerd_installed_base }}.{{ now(fmt='%Y%m%dT%H%M%S') }}"
+    remote_src: true
+    mode: "0600"
+  when: containerd_config_before.stat.exists
+  # En check mode, le répertoire de sauvegarde n'est pas réellement créé.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Drain du nœud (les pods migrent ailleurs)
+  ansible.builtin.command: >-
+    {{ containerd_kubectl }} drain {{ containerd_node_name }}
+    --timeout {{ containerd_drain_timeout }} {{ containerd_drain_extra_opts }}
+  delegate_to: "{{ containerd_first_cp }}"
+  changed_when: true
+  when:
+    - containerd_in_cluster | bool
+    - (containerd_is_control_plane | bool and containerd_drain_control_plane | bool)
+      or (not (containerd_is_control_plane | bool) and containerd_drain_workers | bool)
+
+- name: Drain retenu pour l'uncordon de fin de run
+  ansible.builtin.set_fact:
+    containerd_drained: true
+  when: containerd_in_cluster | bool
+    and ((containerd_is_control_plane | bool and containerd_drain_control_plane | bool)
+         or (not (containerd_is_control_plane | bool) and containerd_drain_workers | bool))
+
+- name: Containerd.io — dégel
+  ansible.builtin.dpkg_selections:
+    name: containerd.io
+    selection: install
+
+- name: Containerd.io {{ containerd_pkg_version }}
+  ansible.builtin.apt:
+    name: "containerd.io={{ containerd_pkg_version }}"
+    state: present
+    allow_downgrade: "{{ containerd_allow_downgrade | bool }}"
+    dpkg_options: "force-confdef,force-confold"  # garder le config.toml existant
+
+# Le postinst du paquet redémarre déjà containerd ; le redémarrage explicite
+# garantit l'état quel que soit le packaging (unit file modifié, etc.).
+- name: Containerd redémarré
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Attente — containerd répond sur son socket
+  ansible.builtin.command: ctr version
+  register: containerd_ctr_ready
+  until: containerd_ctr_ready.rc == 0
+  retries: 10
+  delay: 3
+  changed_when: false
+
+- name: Kubelet redémarré (reconnexion au runtime mis à jour)
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+  when: containerd_in_cluster | bool

@@ -1,0 +1,100 @@
+---
+- name: Répertoire des keyrings apt
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+# Clé ASCII-armored : apt la lit directement via signed-by (extension .asc).
+- name: Clé de signature du dépôt Docker
+  ansible.builtin.get_url:
+    url: "{{ containerd_repo_url }}/gpg"
+    dest: "{{ containerd_repo_key_path }}"
+    mode: "0644"
+
+# Seules les lignes actives comptent (un deb commenté ne gêne pas), et seuls
+# les *.list / *.sources sont lus par apt (.save, .distUpgrade ignorés).
+- name: Autres sources actives vers download.docker.com
+  ansible.builtin.shell: |
+    set -o pipefail
+    grep -rlE '^[^#]*download\.docker\.com' /etc/apt/sources.list.d \
+      --include='*.list' --include='*.sources' 2>/dev/null \
+      | grep -vxF '{{ containerd_repo_file }}' || true
+  args:
+    executable: /bin/bash
+  register: containerd_foreign_repos
+  changed_when: false
+  check_mode: false
+
+- name: Suppression des sources concurrentes et des fichiers apt orphelins
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ containerd_foreign_repos.stdout_lines + containerd_stale_apt_files }}"
+
+- name: Dépôt Docker (fichier possédé par le rôle)
+  ansible.builtin.copy:
+    dest: "{{ containerd_repo_file }}"
+    content: |
+      # Géré par le rôle setup_containerd — NE PAS ÉDITER À LA MAIN.
+      deb [signed-by={{ containerd_repo_key_path }}] {{ containerd_repo_url }} {{ ansible_facts['distribution_release'] }} stable
+    mode: "0644"
+
+- name: Cache apt à jour
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+# Même logique que setup_kubernetes : la cible doit exister dans le dépôt
+# AVANT tout drain. Si elle manque, un rafraîchissement forcé, puis un refus
+# qui liste les versions disponibles.
+- name: Versions containerd.io disponibles
+  ansible.builtin.command: apt-cache madison containerd.io
+  register: containerd_madison
+  changed_when: false
+  check_mode: false
+
+- name: Versions disponibles — extraction
+  ansible.builtin.set_fact:
+    containerd_available_versions: "{{ containerd_madison.stdout | regex_findall('\\|\\s*(\\S+)\\s*\\|') }}"
+
+- name: Cache apt — rafraîchissement forcé (version cible absente du cache)
+  ansible.builtin.apt:
+    update_cache: true
+  when: containerd_available_versions | select('match', containerd_version_regex) | list | length == 0
+
+- name: Versions containerd.io disponibles — après rafraîchissement forcé
+  ansible.builtin.command: apt-cache madison containerd.io
+  register: containerd_madison_fresh
+  changed_when: false
+  check_mode: false
+  when: containerd_available_versions | select('match', containerd_version_regex) | list | length == 0
+
+- name: Versions disponibles — extraction après rafraîchissement
+  ansible.builtin.set_fact:
+    containerd_available_versions: "{{ containerd_madison_fresh.stdout | regex_findall('\\|\\s*(\\S+)\\s*\\|') }}"
+  when: containerd_madison_fresh is not skipped
+
+# madison liste du plus récent au plus ancien : avec une version sans
+# révision ("2.4.2"), la première correspondance est la révision la plus
+# récente.
+- name: Version paquet cible résolue
+  ansible.builtin.set_fact:
+    containerd_pkg_version: "{{ containerd_available_versions | select('match', containerd_version_regex) | first | default('') }}"
+
+- name: REFUS — version cible absente du dépôt
+  ansible.builtin.fail:
+    msg: >-
+      containerd.io {{ containerd_version }} est introuvable dans
+      {{ containerd_repo_url }} ({{ ansible_facts['distribution_release'] }}).
+      Disponibles : {{ containerd_available_versions }}.
+  when: containerd_pkg_version | length == 0
+
+- name: REFUS — downgrade
+  ansible.builtin.command: >-
+    dpkg --compare-versions '{{ containerd_installed_base }}' gt '{{ containerd_target_base }}'
+  register: containerd_is_downgrade
+  changed_when: false
+  failed_when: containerd_is_downgrade.rc == 0 and not (containerd_allow_downgrade | bool)
+  check_mode: false
+  when: containerd_installed_version | length > 0

@@ -1,0 +1,19 @@
+# Géré par le rôle setup_containerd — NE PAS ÉDITER À LA MAIN.
+# Format version 3 (containerd >= 2.0). Seuls les écarts aux défauts de
+# containerd sont déclarés ; `containerd config dump` montre la config complète.
+version = 3
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+  runtime_type = 'io.containerd.runc.v2'
+
+  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+    SystemdCgroup = true
+{% if containerd_runsc | bool %}
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
+  runtime_type = 'io.containerd.runsc.v1'
+{% endif %}
+
+# Miroirs et registres privés : un hosts.toml par registre sous certs.d.
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '/etc/containerd/certs.d'

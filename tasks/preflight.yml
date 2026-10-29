@@ -1,0 +1,43 @@
+---
+- name: REFUS — distribution non supportée
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] == "Debian"
+    fail_msg: "setup_containerd ne gère que Debian/Ubuntu ({{ ansible_facts['distribution'] }} détecté)."
+    quiet: true
+
+- name: REFUS — version cible absente ou mal formée
+  ansible.builtin.assert:
+    that: containerd_version is match('^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.+]+)?$')
+    fail_msg: >-
+      containerd_version doit valoir X.Y.Z ou X.Y.Z-R (ex. "2.4.2-3"), sans
+      suffixe de distribution. Valeur actuelle : "{{ containerd_version }}".
+    quiet: true
+
+- name: Version de containerd.io installée
+  ansible.builtin.command: dpkg-query -W -f='${db:Status-Status} ${Version}' containerd.io
+  register: containerd_dpkg
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Version installée retenue (vide = nœud neuf)
+  ansible.builtin.set_fact:
+    containerd_installed_version: >-
+      {{ containerd_dpkg.stdout.split(' ')[1]
+         if containerd_dpkg.rc == 0 and containerd_dpkg.stdout.startswith('installed ')
+         else '' }}
+
+# Nœud membre du cluster = drain et contrôle Ready possibles. Un nœud neuf
+# (pas encore joint) ou sans control plane joignable : ni l'un ni l'autre.
+- name: Nœud connu du cluster ?
+  ansible.builtin.command: "{{ containerd_kubectl }} get node {{ containerd_node_name }} -o name"
+  delegate_to: "{{ containerd_first_cp }}"
+  register: containerd_node_lookup
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Appartenance au cluster retenue
+  ansible.builtin.set_fact:
+    containerd_in_cluster: "{{ containerd_node_lookup.rc | default(1) == 0 }}"
+    containerd_is_control_plane: "{{ inventory_hostname in groups[containerd_control_plane_group] | default([]) }}"

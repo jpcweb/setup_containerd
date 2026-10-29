@@ -1,2 +1,4 @@
 ---
 # handlers file for setup_containerd
+# Aucun handler : les redémarrages sont explicites et ordonnés dans les
+# tâches (drain → paquet → containerd → kubelet → contrôles → uncordon).

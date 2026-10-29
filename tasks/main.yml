@@ -1,37 +1,43 @@
 ---
-- name: Install dependencies
-  apt:
-    name:
-    - apt-transport-https
-    - ca-certificates
-    - curl
-    - software-properties-common
-    state: latest
-    update_cache: true
+# =============================================================================
+# setup_containerd — point d'entrée
+# Le playbook appelant passe les nœuds en serial: 1 : un seul nœud drainé à la
+# fois. En cas d'échec après le drain, le nœud RESTE cordonné : c'est voulu,
+# on ne renvoie pas de pods sur un runtime dans un état inconnu.
+# =============================================================================
 
-- name: Add Docker official signing GPG key
-  apt_key:
-    url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
-    state: present
+- name: Préflight
+  ansible.builtin.import_tasks: preflight.yml
 
-- name: Add Docker repository
-  apt_repository:
-    repo: "deb [arch=amd64] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
-    state: present
+- name: Dépôt Docker et résolution de la version cible
+  ansible.builtin.import_tasks: repo.yml
 
-- name: Install container.d
-  apt:
+- name: Installation (nœud neuf)
+  ansible.builtin.include_tasks: install.yml
+  when: containerd_installed_version | length == 0
+
+- name: Upgrade (nœud en retard)
+  ansible.builtin.include_tasks: upgrade.yml
+  when:
+    - containerd_installed_version | length > 0
+    - containerd_installed_base != containerd_target_base
+
+- name: Config par défaut du paquet remplacée si besoin
+  ansible.builtin.import_tasks: config.yml
+
+- name: Gel du paquet containerd.io
+  ansible.builtin.dpkg_selections:
     name: containerd.io
-    state: latest
+    selection: "{{ 'hold' if containerd_hold | bool else 'install' }}"
 
-- name: Downloading and extracting {{ crictl_app }} {{ crictl_version }} for Debian based distro
-  unarchive:
-    src: "{{ crictl_repo_url }}"
-    dest: "{{ crictl_bin_path }}"
-    owner: "{{ crictl_file_owner }}"
-    group: "{{ crictl_file_group }}"
-    extra_opts:
-      - crictl
-    remote_src: yes
+- name: Crictl
+  ansible.builtin.import_tasks: crictl.yml
 
-- include_tasks: configure.yml 
+- name: Contrôles
+  ansible.builtin.import_tasks: verify.yml
+
+- name: Uncordon (le nœud a été drainé par ce run)
+  ansible.builtin.command: "{{ containerd_kubectl }} uncordon {{ containerd_node_name }}"
+  delegate_to: "{{ containerd_first_cp }}"
+  changed_when: true
+  when: containerd_drained | default(false) | bool

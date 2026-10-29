@@ -1,6 +1,6 @@
 galaxy_info:
   author: Jeremie Payet
-  description: Install and configure containerd and crictl for kubelet
+  description: Install, upgrade and check containerd (containerd.io) and crictl on Kubernetes nodes
   company: jpcweb
 
   # If the issue tracker for your role is not on github, uncomment the
@@ -16,7 +16,7 @@ galaxy_info:
   # - CC-BY-4.0
   license: BSD-3-Claise
 
-  min_ansible_version: "2.1"
+  min_ansible_version: "2.15"
 
   # If this a Container Enabled role, provide the minimum Ansible Container version.
   # min_ansible_container_version:
